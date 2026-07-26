@@ -1,0 +1,110 @@
+## 
+
+### 10.1. Кастомизация логов: log_format, структура JSON для Vector/ELK и управление access_log
+
+В современных высоконагруженных архитектурах 2026 года Nginx выполняет роль не просто прокси-сервера, а стратегического узла телеметрии и первой точки сбора данных для обеспечения наблюдаемости (Observability) всей системы [NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/). Логи Nginx являются «золотым стандартом» при отладке асинхронных бэкендов на FastAPI / Uvicorn, так как они позволяют зафиксировать аномалии еще до того, как запрос достигнет интерпретатора Python [Основы NGINX глазами разработчика / YouTube](https://www.youtube.com/watch?v=...).
+
+#### 10.1.1. Директива log_format: От текстового хаоса к структурированным данным
+
+Директива `log_format` определяет структуру и набор переменных, которые будут записаны в журнал доступа [Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536).
+
+**Проблема формата `combined`:** По умолчанию Nginx использует текстовый формат `combined`, предназначенный для чтения человеком, но крайне сложный для автоматизированного парсинга регулярными выражениями [Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536). В Production-средах Senior DevOps инженеры используют структурированное логирование в формате **JSON**, что позволяет инструментам сбора данных (Vector, Fluentbit, Logstash) мгновенно индексировать поля без вычислительных затрат на разбор строк [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+> [!warning] Актуализация синтаксиса Начиная с версии 1.11.8, в Nginx доступен параметр `escape=json`, который гарантирует корректное экранирование спецсимволов внутри JSON-объектов. Это критически важно для предотвращения поломок парсеров в ELK / OpenSearch при наличии кавычек или обратных слэшей в User-Agent или URI [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+**Проектирование Production-ready JSON-формата:** Ниже представлен эталонный шаблон лога, включающий метрики производительности и идентификаторы для end-to-end трассировки:
+
+````
+http {
+    log_format json_analytics escape=json '{'
+        '"time_local":"$time_iso8601",'
+        '"remote_addr":"$remote_addr",'
+        '"request_method":"$request_method",'
+        '"request_uri":"$request_uri",'
+        '"status":$status,'
+        '"body_bytes_sent":$body_bytes_sent,'
+        '"request_time":$request_time,'
+        '"http_referrer":"$http_referer",'
+        '"http_user_agent":"$http_user_agent",'
+        '"request_id":"$request_id",'
+        '"upstream_addr":"$upstream_addr",'
+        '"upstream_status":"$upstream_status",'
+        '"upstream_response_time":"$upstream_response_time",'
+        '"upstream_connect_time":"$upstream_connect_time"'
+    '}';
+}
+``` [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/), [Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536)
+
+**Разбор ключевых метрик для аналитики:**
+*   **`$request_time`** — полное время обработки запроса Nginx (от первого байта клиента до последнего байта ответа) [Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536).
+*   **`$upstream_response_time`** — чистое время работы FastAPI / Uvicorn. Помогает понять, где именно возникает задержка: в сети или внутри бизнес-логики [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+*   **`$request_id`** — уникальный 32-символьный идентификатор запроса. Его необходимо передавать на бэкенд через `proxy_set_header X-Request-ID $request_id`, чтобы связать логи Nginx, FastAPI и PostgreSQL в единую цепочку [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+#### 10.1.2. Оптимизация access_log в высоконагруженных системах
+
+Директива `access_log` включает запись логов в указанный файл с применением выбранного формата [Модуль ngx_http_core_module](https://nginx.org/ru/docs/http/ngx_http_core_module.html#access_log). Она может быть определена в контекстах `http`, `server` или `location` [Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536).
+
+**Буферизация для снижения Disk I/O:**
+Прямая запись каждой строки лога на диск при 10k+ RPS создает колоссальную нагрузку на дисковую подсистему [Оптимизация производительности Nginx/Angie / YouTube](https://www.youtube.com/watch?v=...). Параметры буферизации позволяют Nginx накапливать логи в памяти и сбрасывать их пачками [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+```nginx
+access_log /var/log/nginx/access.log json_analytics buffer=32k flush=5s;
+````
+
+- **`buffer=32k`** — данные пишутся на диск только при заполнении буфера в 32 КБ [Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536).
+- **`flush=5s`** — принудительный сброс буфера на диск каждые 5 секунд, если он не заполнился раньше [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+#### 10.1.3. Условное логирование (Conditional Logging)
+
+Часто служебный трафик (Health Checks от Kubernetes или балансировщиков) составляет до 50% всех логов, не неся полезной информации для аналитики. Nginx позволяет фильтровать такие запросы с помощью параметра `if` в `access_log` совместно с блоком `map` [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+````
+http {
+    map $request_uri $loggable {
+        ~^/healthz    0; # Исключаем Health Check
+        ~^/static/    0; # Исключаем статику для экономии места
+        default       1;
+    }
+
+    server {
+        access_log /var/log/nginx/access.log json_analytics if=$loggable;
+    }
+}
+``` [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/), [Nginx для начинающих / Хабр](https://habr.com/ru/companies/gnivc/articles/977196/)
+
+Этот подход радикально экономит дисковое пространство и снижает стоимость хранения данных в ELK / ClickHouse [Оптимизация производительности Nginx/Angie / YouTube](https://www.youtube.com/watch?v=...).
+
+---
+
+### Интерактивный тест для самопроверки
+
+1. **Зачем использовать параметр `escape=json` при настройке `log_format`?**
+    <details>
+    <summary>Ответ</summary>
+    Для обеспечения валидности JSON-структуры. Он автоматически экранирует символы (например, кавычки в User-Agent), которые могут нарушить структуру JSON-объекта и привести к ошибке парсинга на стороне Vector или Logstash [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+    </details>
+
+2. **В чем разница между переменными `$request_time` и `$upstream_response_time`?**
+    <details>
+    <summary>Ответ</summary>
+    `$request_time` — это общее время обработки запроса Nginx, включая сетевые задержки клиента. `$upstream_response_time` — это время, которое затратил именно бэкенд (FastAPI/Uvicorn) на генерацию ответа [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+    </details>
+
+3. **Как буферизация логов (`buffer=...`) влияет на нагрузку CPU и диска?**
+    <details>
+    <summary>Ответ</summary>
+    Она значительно снижает нагрузку на диск (Disk I/O) за счет уменьшения количества системных вызовов записи, превращая множество мелких операций в редкие крупные блоки данных [Оптимизация производительности Nginx/Angie / YouTube](https://www.youtube.com/watch?v=...).
+    </details>
+
+4. **Где должен быть расположен блок `log_format`, чтобы его можно было использовать в разных виртуальных хостах?**
+    <details>
+    <summary>Ответ</summary>
+    Строго в контексте `http`. Директива `log_format` не может быть объявлена внутри блоков `server` или `location` [Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536).
+    </details>
+
+5. **Каким образом переменная `$request_id` помогает в трассировке запросов?**
+    <details>
+    <summary>Ответ</summary>
+    Nginx генерирует уникальный ID для каждого запроса, который можно логировать и передавать на бэкенд. Это позволяет DevSecOps инженерам найти все связанные записи в логах разных систем по одному идентификатору [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+    </details>
+````
