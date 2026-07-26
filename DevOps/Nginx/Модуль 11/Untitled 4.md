@@ -1,0 +1,117 @@
+## 
+
+### 11.1. Модуль Stream (stream context): Балансировка и проксирование TCP/UDP трафика
+
+В высоконагруженных архитектурах 2026 года Nginx перестал быть исключительно HTTP-сервером. Благодаря модулю `stream`, внедренному начиная с версии 1.9.0, Nginx функционирует как высокопроизводительный балансировщик и прокси-сервер на **4-м уровне модели OSI (Транспортный уровень)** [ngx_stream_proxy_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_http_proxy_module.html), [NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/). Это позволяет обрабатывать TCP-соединения и UDP-датаграммы (DNS, СУБД, VoIP), не вникая в содержимое прикладных протоколов [TCP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+#### 11.1.1. L4 Proxying vs L7 Proxying: Архитектурная разница
+
+Для Senior DevOps инженера понимание разницы между контекстами `http` и `stream` является базовым знанием при проектировании отказоустойчивых систем [TCP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+- **L7 Proxying (`http` context)**: Nginx выступает как "умный инспектор". Он полностью разбирает HTTP-запрос, читает заголовки, проверяет Cookies и может изменять URI [NGINX as a Reverse Proxy / Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536). Это дает гибкость (маршрутизация по путям), но создает нагрузку на CPU из-за парсинга текста [Оптимизация производительности Nginx/Angie / YouTube](https://www.youtube.com/watch?v=...).
+- **L4 Proxying (`stream` context)**: Nginx работает как "прозрачная труба". Он просто перенаправляет пакеты между клиентским сокетом и сокетом бэкенда [Основы NGINX глазами разработчика / YouTube](https://www.youtube.com/watch?v=...).
+    - **Преимущество**: Минимальное потребление RAM и CPU, так как Nginx не парсит заголовки прикладного уровня [TCP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+    - **Универсальность**: Возможность проксировать любой бинарный трафик (PostgreSQL, Redis, MySQL, LDAP) [NGINX as a Reverse Proxy / Mastering Nginx](https://www.packtpub.com/product/mastering-nginx/9781785283536).
+
+> [!warning] Актуализация синтаксиса Конфигурация `stream` **не должна** находиться внутри блока `http`. Обычно её выносят в отдельный каталог, например `/etc/nginx/stream.conf.d/`, и подключают директивой `include` в главном файле `nginx.conf` на верхнем уровне [TCP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+#### 11.1.2. Практические кейсы: СУБД и Redis
+
+Основная задача `stream` — обеспечение высокой доступности (HA) для сервисов, не работающих по протоколу HTTP [High-Availability Deployment Modes / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+1. **Балансировка PostgreSQL (порт 5432)**: Nginx может распределять запросы между несколькими репликами базы данных для чтения или выступать точкой входа перед кластером [Настройка балансировки в Nginx / YouTube](https://www.youtube.com/watch?v=...), [Оптимизация Nginx и Angie под высокие нагрузки / YouTube](https://www.youtube.com/watch?v=...).
+2. **Отказоустойчивость Redis (порт 6379)**: Проксирование трафика на активный узел Redis.
+
+**Пример конфигурации для балансировки СУБД:**
+
+````
+stream {
+    upstream postgres_cluster {
+        # Использование алгоритма least_conn для СУБД
+        least_conn;
+        server 10.0.5.11:5432 weight=5;
+        server 10.0.5.12:5432 weight=5;
+        server 10.0.5.13:5432 backup; # Резервный узел
+    }
+
+    server {
+        listen 5432;
+        proxy_pass postgres_cluster;
+        proxy_connect_timeout 5s; # Таймаут установки соединения с базой
+        proxy_timeout 10m;        # Таймаут между операциями чтения/записи
+    }
+}
+``` [TCP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/), [ngx_stream_proxy_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_stream_proxy_module.html).
+
+#### 11.1.3. TLS Preread и SNI без расшифровки
+
+Модуль `ngx_stream_ssl_preread_module` позволяет Nginx извлекать имя сервера (SNI) из пакета `ClientHello` без терминирования TLS-соединения [ngx_stream_ssl_preread_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_stream_ssl_preread_module.html). Это критично для кейсов, когда данные должны дойти до бэкенда в зашифрованном виде (End-to-End Encryption), но Nginx должен знать, на какой именно апстрим их отправить [Client-Side Encryption / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+**Пример извлечения SNI:**
+```nginx
+stream {
+    map $ssl_preread_server_name $backend_name {
+        db.example.com      postgres_primary;
+        cache.example.com   redis_cluster;
+    }
+
+    server {
+        listen 443;
+        ssl_preread on; # Включаем предварительное чтение SNI
+        proxy_pass $backend_name;
+    }
+}
+``` [ngx_stream_ssl_preread_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_stream_ssl_preread_module.html).
+
+#### 11.1.4. Ключевые директивы и таймауты
+
+*   **`server`**: Создает контекст для прослушивания конкретного TCP/UDP порта.
+*   **`listen`**: Задает адрес и порт. Для UDP необходимо явно указывать флаг `udp` (например, `listen 1234 udp;`).
+*   **`proxy_pass`**: В контексте `stream` принимает только адрес или имя `upstream`. URI здесь **недопустим**, так как нет понятия "пути" на уровне TCP [ngx_stream_proxy_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_stream_proxy_module.html).
+*   **`proxy_connect_timeout`**: Время, в течение которого Nginx ждет подтверждения `SYN-ACK` от бэкенда (дефолт 60s).
+*   **`proxy_timeout`**: Задает таймаут между двумя последовательными операциями чтения или записи. Если данные не передаются в течение этого времени, Nginx закрывает соединение (дефолт 10m).
+
+---
+
+### Интерактивный тест для самопроверки
+
+1. **В каком контексте Nginx необходимо описывать правила для балансировки трафика PostgreSQL?**
+    <details>
+    <summary>Ответ</summary>
+    В контексте `stream`. Контекст `http` не предназначен для обработки не-HTTP протоколов. [TCP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/)
+    </details>
+
+2. **Может ли Nginx в режиме `stream` выполнять маршрутизацию запросов на основе HTTP-заголовка `User-Agent`?**
+    <details>
+    <summary>Ответ</summary>
+    Нет. На 4-м уровне OSI (TCP/UDP) Nginx не видит HTTP-заголовки. Для такой задачи требуется контекст `http`. [TCP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/), [Основы NGINX глазами разработчика / YouTube](https://www.youtube.com/watch?v=...)
+    </details>
+
+3. **Что делает директива `ssl_preread on;`?**
+    <details>
+    <summary>Ответ</summary>
+    Она позволяет Nginx прочитать информацию из начального пакета TLS Handshake (ClientHello) без расшифровки трафика, чтобы получить имя домена (SNI). [ngx_stream_ssl_preread_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_stream_ssl_preread_module.html)
+    </details>
+
+4. **Как в блоке `listen` модуля `stream` указать, что мы работаем с протоколом UDP (например, для NTP или DNS)?**
+    <details>
+    <summary>Ответ</summary>
+    Необходимо добавить параметр `udp` после порта: `listen 53 udp;`. [UDP Load Balancing / NGINX_Cookbook-final](https://www.nginx.com/resources/library/complete-nginx-cookbook/)
+    </details>
+
+5. **В чем основное преимущество L4-проксирования перед L7 с точки зрения системных ресурсов?**
+    <details>
+    <summary>Ответ</summary>
+    L4-проксирование потребляет значительно меньше CPU и памяти, так как Nginx не занимается парсингом и нормализацией текстовых протоколов (HTTP), а просто пересылает бинарные пакеты. [Оптимизация производительности Nginx/Angie / YouTube](https://www.youtube.com/watch?v=...)
+    </details>
+
+---
+**Источники:**
+* [NGINX_Cookbook-final / Derek DeJonghe](https://docs.nginx.com/nginx/admin-guide/)
+* [Complete-NGINX-Cookbook-2019 / Derek DeJonghe](https://www.nginx.com/resources/library/complete-nginx-cookbook/)
+* [Mastering Nginx / Dimitri Aivaliotis](https://www.packtpub.com/product/mastering-nginx/9781785283536)
+* [ngx_stream_proxy_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_http_proxy_module.html)
+* [ngx_stream_ssl_preread_module / Nginx Docs](https://nginx.org/ru/docs/stream/ngx_stream_ssl_preread_module.html)
+* [Основы NGINX глазами разработчика / YouTube](https://www.youtube.com/watch?v=...)
+* [Оптимизация производительности Nginx/Angie / YouTube](https://www.youtube.com/watch?v=...)
+````
