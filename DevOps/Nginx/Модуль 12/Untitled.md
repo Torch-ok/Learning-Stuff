@@ -1,0 +1,102 @@
+## 
+
+### 12.1. Запуск Nginx в Docker: Официальные образы, проброс конфигураций и envsubst
+
+В современной Cloud-Native инфраструктуре 2026 года контейнеризация Nginx стала промышленным стандартом для развертывания асинхронных стеков (FastAPI / Uvicorn + PostgreSQL) [NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/). Использование Docker и Kubernetes позволяет Senior DevOps инженерам обеспечивать идентичность окружений на этапах разработки и эксплуатации, минимизируя риск ошибок конфигурации при масштабировании [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/). Nginx в контейнере работает как легковесный слой доставки, терминирующий TLS и распределяющий трафик между подами приложения [Containers/Microservices / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+
+#### 12.1.1. Анатомия официальных образов: Alpine vs. Debian Unprivileged
+
+При выборе базового образа инженер должен балансировать между безопасностью, размером и бинарной совместимостью динамических модулей [Using the Official NGINX Image / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+
+- **`nginx:latest` (Debian-based):** Базируется на стабильных выпусках Debian. Обладает лучшей совместимостью с проприетарными или сложными динамическими модулями, требующими специфических системных библиотек [Official NGINX Image / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+- **`nginx:alpine`:** Минималистичный образ (~5-10 МБ в сжатом виде). Идеален для высоконагруженных систем, где критична скорость холодного старта контейнера и минимизация векторов атак (меньше установленного ПО — меньше уязвимостей) [Using the Official NGINX Image / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+- **`nginxinc/nginx-unprivileged`:** Специализированная версия для сред с повышенными требованиями безопасности (например, OpenShift или защищенные кластеры Kubernetes), где запрещен запуск от пользователя `root` [NGINX Plus HA Mode / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+
+**Особенности unprivileged-режима:**
+
+1. **Запуск от UID 101:** Процесс Nginx работает от непривилегированного пользователя `nginx`, что предотвращает потенциальный захват хостовой системы при эксплуатации уязвимостей [Creating an NGINX Dockerfile / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+2. **Порты > 1024:** Поскольку непривилегированные пользователи не могут слушать порты ниже 1024 в Linux, по умолчанию Nginx в таких образах слушает порт `8080` вместо `80` [Basics / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+3. **Изменение путей:** Все системные файлы перемещены в доступные для записи директории:
+    - PID-файл: `/tmp/nginx.pid` вместо `/var/run/nginx.pid` [Basics / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+    - Кэш и временные файлы: `/tmp/nginx_cache` [NGINX Content Caching](https://docs.nginx.com/nginx/admin-guide/content-cache/content-caching/).
+
+#### 12.1.2. Проброс конфигураций и работа с томами
+
+Существует два основных способа управления конфигурацией Nginx в Docker [Creating an NGINX Dockerfile / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/):
+
+1. **Bind Mounts (Подмонтирование):** Использование флага `-v` или секции `volumes` в Docker Compose для прямой трансляции локальных файлов в контейнер [Using the Official NGINX Image / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+    
+    ```
+    docker run -d -p 80:80 \
+      -v /path/to/nginx.conf:/etc/nginx/nginx.conf:ro \
+      -v /path/to/conf.d:/etc/nginx/conf.d:ro \
+      nginx
+    ```
+    
+    - _Преимущество:_ Возможность горячего изменения конфига на хосте и выполнения `nginx -s reload` внутри контейнера [Graceful Reload / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+2. **Сборка собственного образа:** Включение конфигов в `Dockerfile` через `ADD` или `COPY` [Creating an NGINX Dockerfile / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/). Этот метод предпочтителен для Production, так как гарантирует неизменяемость (Immutability) версии [Creating an NGINX Dockerfile / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+> [!warning] Актуализация синтаксиса В контейнеризированных средах КАТЕГОРИЧЕСКИ необходимо перенаправлять логи в стандартные потоки вывода. В `nginx.conf` следует использовать: `access_log /dev/stdout json_analytics;` и `error_log /dev/stderr warn;`. Это позволяет Docker-демону или Kubernetes Sidecar-контейнерам корректно собирать логи для последующей отправки в Vector/ELK [Debugging and Troubleshooting / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+
+#### 12.1.3. Динамическая конфигурация через envsubst
+
+Официальные образы Nginx включают встроенный механизм подстановки переменных окружения. Скрипт `/docker-entrypoint.d/20-envsubst-on-templates-sh` ищет файлы в директории `/etc/nginx/templates/` с расширением `.template`, заменяет в них переменные и сохраняет результат в `/etc/nginx/conf.d/` без расширения [Using Environment Variables in NGINX / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+
+**Пример шаблона (`default.conf.template`):**
+
+````
+server {
+    listen 80;
+    location / {
+        # Динамически задаем адрес FastAPI бэкенда
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+    }
+}
+``` [Using Environment Variables in NGINX / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+**Критическая деталь безопасности:**
+Команда `envsubst` заменяет все вхождения, начинающиеся с `$`. Если в вашем конфиге используются встроенные переменные Nginx (например, `$host`, `$uri`), они могут быть затерты пустыми значениями из окружения ОС [Use Variables / NGINX Documentation](https://docs.nginx.com/nginx/admin-guide/web-server/web-server/). Чтобы этого избежать, необходимо явно указывать список переменных для замены:
+`ENV ENVSUBST_VARIABLE_REVERSION='$BACKEND_HOST,$BACKEND_PORT'` [Using Environment Variables in NGINX / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+
+---
+
+### Интерактивный тест для самопроверки
+
+1. **Почему в официальном unprivileged-образе Nginx стандартный порт изменен с 80 на 8080?**
+    <details>
+    <summary>Ответ</summary>
+    В Linux-системах только пользователь `root` имеет право открывать порты ниже 1024. Поскольку unprivileged-образ запускается от пользователя `nginx`, используется порт 8080 [Basics / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+    </details>
+
+2. **В какую директорию контейнера нужно поместить файл `.template`, чтобы Nginx автоматически подставил в него переменные окружения при старте?**
+    <details>
+    <summary>Ответ</summary>
+    В директорию `/etc/nginx/templates/` [Using Environment Variables in NGINX / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+    </details>
+
+3. **Как правильно настроить логирование в Nginx внутри Docker, чтобы логи были доступны через команду `docker logs`?**
+    <details>
+    <summary>Ответ</summary>
+    Необходимо направить `access_log` в `/dev/stdout` и `error_log` в `/dev/stderr` [Debugging and Troubleshooting / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+    </details>
+
+4. **В чем заключается риск использования `envsubst` для всего файла конфигурации Nginx без указания конкретных переменных?**
+    <details>
+    <summary>Ответ</summary>
+    `envsubst` может заменить встроенные переменные Nginx (такие как `$uri` или `$host`) на пустые строки, если такие переменные не определены в системном окружении, что сломает логику маршрутизации [Using Environment Variables in NGINX / NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/).
+    </details>
+
+5. **Какая директива обязательна для запуска Nginx внутри Dockerfile, если не используется флаг `-g "daemon off;"` в команде запуска?**
+    <details>
+    <summary>Ответ</summary>
+    Директива `daemon off;` в основном контексте файла `nginx.conf`. Она необходима, чтобы процесс не уходил в фон, иначе Docker-контейнер немедленно завершится после старта [Creating an NGINX Dockerfile / Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+    </details>
+
+---
+**Источники:**
+* [NGINX_Cookbook-final / Derek DeJonghe](https://docs.nginx.com/nginx/admin-guide/)
+* [Complete-NGINX-Cookbook-2019 / Derek DeJonghe](https://www.nginx.com/resources/library/complete-nginx-cookbook/)
+* [Configuring NGINX and NGINX Plus as a Web Server / NGINX Documentation](https://docs.nginx.com/nginx/admin-guide/web-server/web-server/)
+* [NGINX Content Caching / NGINX Documentation](https://docs.nginx.com/nginx/admin-guide/content-cache/content-caching/)
+* [Nginx для начинающих / Хабр](https://habr.com/ru/companies/gnivc/articles/977196/)
+````
