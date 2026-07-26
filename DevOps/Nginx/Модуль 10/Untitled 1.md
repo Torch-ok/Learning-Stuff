@@ -1,0 +1,127 @@
+### 10.3. Интеграция с Prometheus: Настройка nginx-prometheus-exporter и сбор метрик
+
+В современных Cloud-Native инфраструктурах мониторинг Nginx переходит от простого анализа журналов к высокочастотному сбору метрик в реальном времени. Стандартным инструментом для обеспечения наблюдаемости (Observability) в связке с Prometheus и Grafana является специализированный агент — экспортер [NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/), [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/).
+
+#### 10.3.1. Архитектурная роль nginx-prometheus-exporter
+
+Сам по себе Nginx (особенно Open-Source версия) выдает данные о состоянии в простом текстовом формате через модуль `stub_status`,. Prometheus не умеет нативно парсить этот текст, так как он ожидает данные в формате OpenMetrics.
+
+**Роль экспортера заключается в следующем:**
+
+1. **Scraping (Сбор):** Экспортер периодически опрашивает эндпоинт `/stub_status` вашего Nginx,.
+2. **Transformation (Трансформация):** Он переводит сырые счетчики (например, `accepts`, `handled`, `requests`) в структурированные временные ряды (time series) с соответствующими именами и метками,.
+3. **Exposition (Экспонирование):** Экспортер открывает собственный HTTP-порт (обычно 9113), на котором Prometheus забирает данные уже в понятном ему формате.
+
+#### 10.3.2. Развертывание и конфигурация экспортера
+
+Экспортер является легковесным приложением, написанным на Go, и может запускаться как бинарный файл или Docker-контейнер.
+
+##### Настройка стороны Nginx
+
+Прежде всего, в конфигурации Nginx должен быть активен модуль мониторинга (как разобрано в 10.2):
+
+````
+server {
+    listen 8080;
+    location /stub_status {
+        stub_status;
+        allow 127.0.0.1; # Разрешаем доступ экспортеру
+        deny all;
+    }
+}
+```,.
+
+##### Запуск через Docker
+Наиболее распространенный метод в контейнеризированных средах:
+```bash
+docker run -p 9113:9113 \
+  nginx/nginx-prometheus-exporter:0.8.0 \
+  -nginx.scrape-uri http://{nginxEndpoint}:8080/stub_status
+```.
+
+**Ключевые флаги запуска:**
+*   `-nginx.scrape-uri`: полный путь к странице `stub_status`.
+*   `-nginx.plus`: флаг, который необходимо добавить, если вы мониторите Nginx Plus (в этом случае экспортер будет собирать гораздо больше метрик через API),.
+
+#### 10.3.3. Ключевые Prometheus-метрики
+
+После запуска экспортер начнет генерировать метрики, названия которых соответствуют внутренним переменным Nginx,:
+
+| Метрика Prometheus | Описание | Соответствие в stub_status |
+| :--- | :--- | :--- |
+| `nginx_up` | Статус доступности самого Nginx для экспортера (1 — ок, 0 — ошибка) | — |
+| `nginx_connections_active` | Количество активных клиентских соединений в данный момент | `Active connections`, |
+| `nginx_connections_accepted` | Общее количество принятых TCP-соединений | `accepts`, |
+| `nginx_connections_handled` | Количество успешно обработанных соединений | `handled`, |
+| `nginx_http_requests_total` | Суммарное количество обработанных HTTP-запросов | `requests`, |
+| `nginx_connections_waiting` | Количество соединений в режиме ожидания (Keep-Alive) | `Waiting`, |
+
+#### 10.3.4. Интеграция с Prometheus и визуализация
+
+Для того чтобы Prometheus начал собирать данные, необходимо добавить новую задачу (job) в файл `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'nginx'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+```.
+
+##### PromQL-запросы для Grafana
+
+Используя собранные метрики, Senior DevOps инженеры строят аналитические дашборды:
+
+1.  **Расчет RPS (Запросов в секунду):**
+    `rate(nginx_http_requests_total[2m])`
+    Позволяет видеть динамику нагрузки на API FastAPI,.
+2.  **Доля Keep-Alive соединений:**
+    `(nginx_connections_waiting / nginx_connections_active) * 100`
+    Помогает оценить, насколько эффективно Nginx удерживает сессии и не расходуются ли сокеты впустую,.
+3.  **Плотность подключений (запросов на одно соединение):**
+    `nginx_http_requests_total / nginx_connections_handled`
+    Дает понимание того, сколько полезной работы (запросов) совершается в рамках одной TCP-сессии,.
+
+---
+
+### Интерактивный тест для самопроверки
+
+1. **Зачем нужен `nginx-prometheus-exporter`, если Nginx уже отдает метрики через `stub_status`?**
+    <details>
+    <summary>Ответ</summary>
+    Потому что `stub_status` отдает данные в неструктурированном текстовом виде, который Prometheus не может обработать напрямую. Экспортер конвертирует этот текст в формат OpenMetrics. [NGINX_Cookbook-final](https://docs.nginx.com/nginx/admin-guide/),
+    </details>
+
+2. **Какой флаг экспортера нужно использовать, если вы перешли с Open-Source версии на Nginx Plus для получения детальной статистики по апстримам?**
+    <details>
+    <summary>Ответ</summary>
+    Необходимо добавить флаг `-nginx.plus`. Это изменит логику сбора: экспортер будет обращаться к API Nginx Plus, где доступно значительно больше метрик.,
+    </details>
+
+3. **Что означает метрика `nginx_up` со значением 0 в вашей системе мониторинга?**
+    <details>
+    <summary>Ответ</summary>
+    Это означает, что сам экспортер работает, но он не может получить данные от Nginx (например, Nginx упал, или адрес в `-nginx.scrape-uri` указан неверно).
+    </details>
+
+4. **Какая Prometheus-метрика соответствует количеству простаивающих соединений, которые Nginx держит открытыми для FastAPI?**
+    <details>
+    <summary>Ответ</summary>
+    Метрика `nginx_connections_waiting` (соответствует значению `Waiting` из `stub_status`).,
+    </details>
+
+5. **На каком порту по умолчанию работает `nginx-prometheus-exporter`?**
+    <details>
+    <summary>Ответ</summary>
+    По умолчанию экспортер слушает порт 9113.
+    </details>
+
+---
+**Источники:**
+* [NGINX_Cookbook-final / Derek DeJonghe](https://docs.nginx.com/nginx/admin-guide/)
+* [Complete-NGINX-Cookbook-2019](https://www.nginx.com/resources/library/complete-nginx-cookbook/)
+* [Mastering Nginx / Dimitri Aivaliotis](https://www.packtpub.com/product/mastering-nginx/9781785283536)
+* [Оптимизация производительности Nginx/Angie / YouTube](https://www.youtube.com/watch?v=...)
+* [Настройка балансировки в Nginx / YouTube](https://www.youtube.com/watch?v=...)
+* [Основы NGINX глазами разработчика / YouTube](https://www.youtube.com/watch?v=...)
+````
