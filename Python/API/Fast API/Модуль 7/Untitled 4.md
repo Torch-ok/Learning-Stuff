@@ -1,4 +1,0 @@
----
-tags:
-  - Programming/Learning-Stuff/Python/API/FastAPI/Module_7
----
