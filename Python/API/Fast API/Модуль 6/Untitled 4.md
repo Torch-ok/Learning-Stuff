@@ -1,0 +1,50 @@
+### 
+
+#### Сводный академический глоссарий Модуля 6
+
+|Термин|Описание|Источник|
+|:--|:--|:--|
+|**OAuth2 & Password Flow**|Стандартный протокол авторизации, где клиент обменивает 'username' и 'password' на временный токен доступа через 'tokenUrl',,.|[Security - First Steps](https://fastapi.tiangolo.com/tutorial/security/first-steps/)|
+|**JWT (Access & Refresh Tokens)**|Компактный формат передачи подписанных данных (claims), где Access-токен служит для доступа к ресурсам, а Refresh-токен — для его обновления,,.|[OAuth2 with Password (and hashing)](https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/)|
+|**Argon2id Password Hashing**|Современный адаптивный алгоритм хеширования, устойчивый к атакам с использованием GPU и ASIC, признанный стандартом OWASP в 2026 году,,.|[Authentication - Registration and Login](https://www.youtube.com/watch?v=CoreySchafer10)|
+|**RBAC vs ABAC Models**|RBAC — доступ на основе статических ролей (Admin, User). ABAC — гибкий доступ на основе атрибутов субъекта, объекта и контекста,.|[DevOps from Zero to Hero](https://www.youtube.com/watch?v=JavaScriptMastery)|
+|**CORS & Security Middlewares**|'CORSMiddleware' управляет доступом между разными источниками ('Origin'),. Другие middleware (например, 'Helmet') защищают HTTP-заголовки.|[CORS (Cross-Origin Resource Sharing)](https://fastapi.tiangolo.com/tutorial/cors/)|
+|**HttpOnly Cookies**|Специальный флаг кук, запрещающий доступ к ним через JavaScript, что предотвращает кражу токенов при XSS-атаках,.|[Authentication - Registration and Login](https://www.youtube.com/watch?v=CoreySchafer10)|
+|**Rate Limiting (slowapi / Redis)**|Механизм ограничения частоты запросов для защиты от DDoS и перебора паролей, использующий алгоритмы вроде 'Sliding Window',,.|[FastAPI Full Course 2026](https://www.youtube.com/watch?v=MohitDecodes)|
+|**OWASP Top-10 Protections**|Комплекс защит (от SQL-инъекций, XSS, CSRF), встроенный в ядро FastAPI, Pydantic и SQLAlchemy 2.0,.|[DevOps from Zero to Hero](https://www.youtube.com/watch?v=JavaScriptMastery)|
+
+#### Сквозной практический кейс: Разработка полностью защищенного микросервиса с JWT, RBAC и Rate Limiting
+
+**Постановка задачи:** Спроектировать и собрать модуль безопасности для корпоративного хранилища документов. Система должна поддерживать регистрацию с Argon2id, аутентификацию через JWT в защищенных куках и разграничение прав (Admin может удалять, Editor — изменять, Reader — только просматривать),,.
+
+**Пошаговый алгоритм выполнения:**
+
+1. **Сервис аутентификации:** Реализуйте функцию 'hash_password' через 'pwdlib' с использованием 'argon2'. Настройте эндпоинт '/login', который принимает 'OAuth2PasswordRequestForm',. Вместо возврата токена в JSON, установите его в 'response.set_cookie' с параметрами 'httponly=True', 'secure=True' и 'samesite="strict"' для максимальной защиты от XSS и CSRF,.
+    
+2. **Настройка ролевой модели:** Определите 'Enum' для ролей пользователей ('Admin', 'Editor', 'Reader'). В модели базы данных 'User' добавьте поле 'role'.
+    
+3. **Зависимости проверки прав (RBAC):** Создайте класс 'RoleChecker', принимающий список разрешенных ролей. Используйте его в эндпоинтах через 'Depends',.
+    
+    ```
+    @router.delete("/{doc_id}", dependencies=[Depends(RoleChecker(["Admin"]))])
+    async def delete_document(doc_id: int, db: SessionDep):
+        ...
+    ```
+    
+4. **Ограничение частоты запросов:** Подключите 'Limiter' из библиотеки 'slowapi'. Настройте хранилище в Redis для синхронизации лимитов между воркерами. Установите лимит '3/minute' на эндпоинт авторизации для защиты от Brute-force.
+    
+5. **Инфраструктурная защита:** Добавьте 'CORSMiddleware', явно указав доверенные домены фронтенда. Используйте 'TrustedHostMiddleware' для фильтрации разрешенных значений заголовка 'Host',.
+    
+6. **Тестирование:** Напишите асинхронные тесты через 'httpx.AsyncClient'. Убедитесь, что запрос без куки возвращает '401 Unauthorized', а Reader, пытающийся удалить документ, получает '403 Forbidden',.
+    
+
+#### Комплексный контрольный тест для самопроверки
+
+1. **Вопрос:** В каком случае FastAPI вернет статус '403 Forbidden' вместо '401 Unauthorized'?
+    - _Ответ: '401' возвращается, когда пользователь не предоставил валидных учетных данных (не опознан). '403' возвращается, когда пользователь аутентифицирован, но у него недостаточно прав (ролей/скоупов) для выполнения конкретного действия,._
+2. **Задача на уязвимость:** Проанализируйте код: 'payload = jwt.decode(token, SECRET, options={"verify_exp": False})'. К какой атаке это приведет?
+    - _Решение: Отключение проверки 'exp' позволяет использовать токены вечно, даже если они были украдены или их срок жизни давно истек,._
+3. **Практическое задание:** Реализуйте в вашей зависимости 'get_current_user' проверку "черного списка" токенов. Если 'jti' токена найден в Redis (токен отозван), выбрасывайте 'HTTPException(status_code=401)'.
+4. **Задача на CORS:** Настройте 'CORSMiddleware' так, чтобы доступ был разрешен только для 'https://dashboard.company.com' и запрещен для любых других субдоменов, включая 'http://localhost' в продакшне,.
+5. **Вопрос на сравнение:** Почему лимитирование по 'user_id' эффективнее лимитирования по IP-адресу для защиты API от злоумышленников, использующих прокси-серверы?
+    - _Ответ: IP-адрес легко подменить, а лимит по 'user_id' привязан к конкретному аккаунту, что блокирует вредоносную активность независимо от сетевого окружения атакующего,._
