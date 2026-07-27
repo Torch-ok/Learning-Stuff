@@ -2,3 +2,109 @@
 tags:
   - Programming/Learning-Stuff/Python/API/FastAPI/Module_9
 ---
+### 9.2. Архитектура Connection Manager: Управление пулом активных сокетов и комнатная маршрутизация
+
+#### Теоретический фундамент и архитектура
+
+В асинхронных приложениях на FastAPI 2026 года управление состоянием соединений реального времени требует централизованного подхода, так как объекты `WebSocket` являются долгоживущими и хранят состояние сессии. Паттерн **`ConnectionManager`** предназначен для агрегации всех активных экземпляров сокетов, обеспечивая единую точку входа для мониторинга и взаимодействия с пользователями.
+
+**Отслеживание жизненного цикла клиентов:** Критически важной задачей менеджера является предотвращение утечек памяти. Каждый раз, когда клиент проходит фазу хэндшейка и вызывается метод `.accept()`, объект сокета должен быть зарегистрирован во внутреннем хранилище менеджера [9.1 draft]. При возникновении исключения **`WebSocketDisconnect`** или штатном закрытии, менеджер обязан немедленно удалить "мертвую" гильзу из пула, иначе Python-объекты будут накапливаться в куче, вызывая деградацию производительности сервера.
+
+**Стратегии рассылки сообщений:**
+
+1. **Point-to-point**: адресная доставка сообщения конкретному `user_id` [8.3 draft].
+2. **Broadcast**: массовая рассылка всем клиентам, подключенным к данному воркеру ASGI [8.3 draft].
+3. **Room Routing (Channels)**: логическая группировка сокетов по идентификаторам (например, `room_id` или `chat_id`). Это позволяет изолировать трафик внутри конкретных чатов или каналов уведомлений, что является стандартом для систем поддержки и мессенджеров.
+
+**Безопасная рассылка:** Для эффективной отправки данных множеству клиентов используется `asyncio.gather`. Это позволяет выполнять I/O-операции отправки фреймов параллельно. При этом необходимо оборачивать отправку каждому клиенту в `try...except`, чтобы обрыв связи с одним пользователем не блокировал рассылку остальным участникам комнаты.
+
+#### Практическая реализация и синтаксис
+
+Реализация менеджера с поддержкой комнат использует словарь, где ключом выступает `room_id`, а значением — список активных объектов `WebSocket`.
+
+**Класс `ConnectionManager` для комнатной маршрутизации:**
+
+```
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+
+class ConnectionManager:
+    def __init__(self):
+        # Хранение сокетов, сгруппированных по комнатам
+        self.active_connections: dict[str, list[WebSocket]] = {} #
+
+    async def connect(self, room_id: str, websocket: WebSocket):
+        await websocket.accept()
+        if room_id not in self.active_connections:
+            self.active_connections[room_id] = []
+        self.active_connections[room_id].append(websocket) #
+
+    def disconnect(self, room_id: str, websocket: WebSocket):
+        if room_id in self.active_connections:
+            self.active_connections[room_id].remove(websocket)
+            if not self.active_connections[room_id]:
+                del self.active_connections[room_id] # Очистка пустой комнаты
+
+    async def send_personal_message(self, message: dict, websocket: WebSocket):
+        await websocket.send_json(message) #
+
+    async def broadcast_to_room(self, room_id: str, message: dict):
+        if room_id in self.active_connections:
+            # Параллельная рассылка всем участникам комнаты
+            tasks = [
+                connection.send_json(message)
+                for connection in self.active_connections[room_id]
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True) #
+
+manager = ConnectionManager()
+```
+
+[WebSockets Reference](https://fastapi.tiangolo.com/reference/websockets/), [Concurrency and async / await](https://fastapi.tiangolo.com/async/)
+
+**Интеграция в роутер FastAPI:**
+
+```
+from typing import Annotated
+from fastapi import APIRouter, Depends
+
+router = APIRouter(prefix="/ws")
+
+@router.websocket("/chat/{room_id}")
+async def chat_endpoint(
+    websocket: WebSocket,
+    room_id: str,
+    # manager может быть инжектирован как глобальная зависимость
+):
+    await manager.connect(room_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            await manager.broadcast_to_room(room_id, {"room": room_id, "data": data})
+    except WebSocketDisconnect:
+        manager.disconnect(room_id, websocket)
+```
+
+[APIRouter Class](https://fastapi.tiangolo.com/reference/apirouter/), [WebSockets Tutorial](https://fastapi.tiangolo.com/advanced/websockets/)
+
+#### Глоссарий терминов
+
+- **[`ConnectionManager` Pattern](https://fastapi.tiangolo.com/advanced/websockets/)** — архитектурный шаблон для централизованного контроля жизненного цикла и состояний WebSocket-подключений.
+- **WebSocket Connection Pool** — совокупность активных TCP-соединений, удерживаемых сервером для немедленного обмена данными.
+- **[Broadcast Messaging](https://fastapi.tiangolo.com/tutorial/bigger-applications/)** — механизм трансляции одного сообщения всем активным подписчикам одновременно.
+- **Room-based Routing / Channels** — сегментация пула подключений по логическим признакам для обеспечения приватности и снижения сетевого шума.
+- **Dead Connection Cleanup** — процесс принудительного удаления закрытых объектов сокетов из памяти сервера во избежание утечек.
+- **[`asyncio.gather` for Mass I/O](https://fastapi.tiangolo.com/async/)** — инструмент Python для запуска множества корутин (например, рассылки сообщений) одновременно в рамках одного цикла событий.
+
+#### Практический кейс: Изолированный многокомнатный чат-сервис
+
+**Сценарий:** Разработка системы онлайн-поддержки, где каждый тикет — это отдельная комната (`room_id`). Клиент и менеджер должны общаться строго внутри своего тикета, не видя сообщений из других диалогов.
+
+**Решение проблемы "зависших" рассылок:** Если во время выполнения `broadcast_to_room` один из клиентов имеет крайне низкую скорость соединения или его сокет находится в состоянии "полузакрыт" (Half-closed), стандартный `await` может заблокировать цикл рассылки для всей комнаты. Для решения в 2026 году используется `asyncio.wait_for(..., timeout=1.0)` внутри цикла отправки. Это гарантирует, что если клиент не может принять данные в течение секунды, его попытка отправки будет отменена, а менеджер сможет продолжить работу с остальными участниками.
+
+#### Вопросы и задания для самопроверки
+
+1. **Вопрос:** Почему прямое использование `list[WebSocket]` небезопасно в среде с высокой частотой подключений/отключений при наличии `await` внутри циклов?
+    - _Ответ: При выполнении `await` внутри цикла итерации по списку управление возвращается в Event Loop. Если в этот момент произойдет другое событие (например, другой клиент отключится), список может измениться, что приведет к `RuntimeError: dictionary changed size during iteration` или пропуску клиентов._
+2. **Задача:** Реализуйте в методе `broadcast_to_room` защиту от "медленных" клиентов с помощью `asyncio.wait_for`.
+3. **Практическое задание:** Добавьте в класс `ConnectionManager` метод `get_room_stats(room_id: str) -> int`, который возвращает текущее количество активных пользователей в комнате, и выведите это число в логи при каждом новом подключении.
