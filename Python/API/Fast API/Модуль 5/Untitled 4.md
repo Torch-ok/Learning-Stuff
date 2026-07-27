@@ -2,3 +2,60 @@
 tags:
   - Programming/Learning-Stuff/Python/API/FastAPI/Module_5
 ---
+### 
+
+#### Сводный академический глоссарий Модуля 5
+
+|Термин|Описание|Источник|
+|:--|:--|:--|
+|**SQLAlchemy 2.0 Async Engine**|Объект, создаваемый через `create_async_engine`, который управляет пулом асинхронных соединений и метаданными подключения к базе данных [5.1 draft, 769, 784].|[SQL Databases](https://fastapi.tiangolo.com/tutorial/sql-databases/)|
+|**asyncpg Driver**|Высокопроизводительный асинхронный драйвер для PostgreSQL, обеспечивающий нативную работу с бинарным протоколом и максимальную скорость I/O [5.1 draft, 163, 768].|[SQL Databases](https://fastapi.tiangolo.com/tutorial/sql-databases/)|
+|**AsyncSession & Unit of Work**|`AsyncSession` реализует паттерн «Единица работы», отслеживая изменения объектов и обеспечивая выполнение транзакций по принципам ACID [5.1 draft, 246, 770, 816].|[SQL Databases](https://fastapi.tiangolo.com/tutorial/sql-databases/)|
+|**DeclarativeBase & Mapped**|Современный синтаксис определения моделей SQLAlchemy 2.0 на основе аннотаций типов Python для строгой проверки и поддержки IDE [5.2 draft, 744, 746, 751].|[SQL Databases](https://fastapi.tiangolo.com/tutorial/sql-databases/)|
+|**Eager Loading**|Стратегии немедленной загрузки связанных данных (`selectinload` для коллекций, `joinedload` для связей «многие к одному») [5.2 draft, 772, 775, 776].|[SQL Databases](https://fastapi.tiangolo.com/tutorial/sql-databases/)|
+|**N+1 Query Problem**|Проблема производительности, при которой обращение к связанным объектам в цикле порождает множество избыточных SQL-запросов [5.2 draft, 775].|[SQL Databases](https://fastapi.tiangolo.com/tutorial/sql-databases/)|
+|**Alembic Async Setup**|Конфигурация инструментов миграции для асинхронных сред, использующая `asyncio` и асинхронные движки в файле `env.py` [5.3 draft, 584, 585].|[Alembic Docs](https://alembic.sqlalchemy.org/en/latest/)|
+|**Container Migration Pipelines**|Механизм автоматического применения миграций `alembic upgrade head` при развертывании приложения в Docker/Kubernetes [5.3 draft, 20, 21].|[DevOps Hero](https://www.youtube.com/watch?v=DevOpsZeroToHero)|
+
+#### Сквозной практический кейс: Сервис работы с PostgreSQL и изоляцией транзакций
+
+**Постановка задачи:** Разработать финансовый микросервис для управления банковскими счетами (`Account`) и логирования операций (`Transaction`) с гарантией целостности данных при конкурентных переводах [5.4 prompt].
+
+**Пошаговый алгоритм выполнения:**
+
+1. **Проектирование моделей данных:** Используйте `DeclarativeBase` для создания моделей со связями `One-to-Many`. Настройте поле `balance` с типом `Numeric` для предотвращения ошибок округления.
+    
+    ```
+    class Account(Base):
+        __tablename__ = "accounts"
+        id: Mapped[int] = mapped_column(primary_key=True)
+        balance: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+        owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    ```
+    
+2. **Миграции Alembic:** Инициализируйте Alembic с асинхронным шаблоном [5.3 draft]. Настройте автоматическое создание таблиц через `revision --autogenerate`, предварительно импортировав все модели в `env.py`.
+    
+3. **Реализация логики перевода (ACID):** Для защиты от «потерянных обновлений» (Lost Updates) используйте атомарную транзакцию через `async with session.begin()` [5.1 draft, 774]. Это гарантирует, что либо оба счета обновятся, либо операция полностью откатится при ошибке.
+    
+4. **Интеграция сессии через DI:** Оформите `get_async_session` как асинхронную зависимость с `yield` в блоке `try...finally` [5.1 draft, 113, 745]. Это обеспечит автоматическое закрытие соединения после формирования HTTP-ответа.
+    
+5. **Интеграционное тестирование:** Напишите тесты с использованием `pytest-asyncio` и `httpx.AsyncClient`. Используйте фикстуру `setup_db`, которая выполняет `drop_all` и `create_all` перед каждым тестом для обеспечения чистоты окружения.
+    
+
+#### Комплексный контрольный тест для самопроверки
+
+1. **Вопрос:** Какова основная причина возникновения ошибки `MissingGreenlet` при работе с SQLAlchemy в FastAPI?
+    
+    - _Ответ: Попытка использовать ленивую загрузку (Lazy Loading) связей в асинхронном контексте без явного указания стратегии загрузки в запросе [5.2 draft, 775]._
+2. **Задача:** Напишите SQL-запрос через `select()`, который получает пользователя, все его кошельки и историю операций для каждого кошелька за один или два эффективных запроса.
+    
+    - _Подсказка: Используйте цепочку `.options(selectinload(User.wallets).selectinload(Wallet.operations))` [5.2 draft, 776]._
+3. **Практическое задание:** Реализуйте функцию, которая находит `Account` по ID и блокирует строку для записи.
+    
+    - _Решение: Используйте метод `select(Account).where(...).with_for_update()` внутри асинхронной транзакции [5.4 prompt, 246]._
+4. **Задача:** Настройте `env.py` в Alembic так, чтобы он считывал `DATABASE_URL` напрямую из объекта настроек `pydantic-settings`.
+    
+    - _Решение: Импортируйте объект `settings` и вызовите `config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)` внутри `run_migrations_online()` [5.3 draft, 588]._
+5. **Вопрос:** В чем разница в поведении Unit of Work при вызове `session.flush()` и `session.commit()`?
+    
+    - _Ответ: `flush()` отправляет SQL-команды в базу данных и позволяет получить сгенерированные ID, но не завершает транзакцию; `commit()` окончательно фиксирует изменения в БД и закрывает транзакцию [5.1 draft, 250, 755]._
