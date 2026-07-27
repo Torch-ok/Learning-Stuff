@@ -1,0 +1,94 @@
+### 
+
+#### Теоретический фундамент и архитектура
+
+В современной веб-разработке 2026 года авторизация является процессом определения прав доступа пользователя к конкретным действиям или ресурсам после успешного прохождения аутентификации. Существует две фундаментальные модели разграничения прав, которые активно применяются в FastAPI-приложениях:
+
+- **Role-Based Access Control (RBAC)** — модель, основанная на ролях. Доступ предоставляется исходя из принадлежности субъекта к статической группе (например, `admin`, `manager`, `user`), которой заранее назначены определенные полномочия.
+- **Attribute-Based Access Control (ABAC)** — динамическая модель, проверяющая права на основе совокупности атрибутов субъекта, объекта, действия и контекста (например, IP-адрес, время запроса или владение конкретным ресурсом).
+
+Архитектура FastAPI позволяет вынести авторизационную логику из тела эндпоинта в прозрачную и переиспользуемую систему зависимостей `Depends()`. Это избавляет бизнес-код от громоздких конструкций `if...else` и делает проверку прав декларативной. Паттерн «Фабрика зависимостей» позволяет создавать параметризуемые классы авторизации, которые можно гибко комбинировать в декораторах для разных уровней доступа.
+
+#### Практическая реализация и синтаксис
+
+Современная реализация RBAC в FastAPI часто использует классы с методом `__call__`, что превращает их в вызываемые зависимости.
+
+**Пример реализации RBAC через класс-зависимость:**
+
+```
+from fastapi import Depends, HTTPException, status
+from typing import Annotated
+# Предполагается импорт зависимости для получения текущего пользователя
+from .auth import get_current_user
+from .models import User
+
+class RoleChecker:
+    def __init__(self, allowed_roles: list[str]):
+        self.allowed_roles = allowed_roles #
+
+    def __call__(self, user: Annotated[User, Depends(get_current_user)]):
+        if user.role not in self.allowed_roles: #
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions"
+            )
+        return user
+
+# Создание конкретных ролей
+allow_admin = RoleChecker(["admin"]) #
+allow_manager = RoleChecker(["admin", "manager"])
+```
+
+[Security - First Steps](https://fastapi.tiangolo.com/tutorial/security/first-steps/), [Python FastAPI Tutorial (Part 10)](https://www.youtube.com/watch?v=PythonFastAPITutorial10)
+
+**Реализация ABAC (проверка владения ресурсом):** Для проверки права собственности на объект (например, пост или заказ) зависимость должна иметь доступ к параметрам пути и текущему пользователю.
+
+```
+from .database import SessionDep
+from .models import Post
+
+async def check_post_ownership(
+    post_id: int, # Параметр пути
+    user: Annotated[User, Depends(get_current_user)], # Текущий пользователь
+    db: SessionDep
+):
+    post = await db.get(Post, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found") #
+    if post.owner_id != user.id and user.role != "superuser": # Правило ABAC
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not the owner of this resource" #
+        )
+    return post
+```
+
+[Bigger Applications - Multiple Files](https://fastapi.tiangolo.com/tutorial/bigger-applications/), [Get Current User](https://fastapi.tiangolo.com/tutorial/security/get-current-user/)
+
+#### Глоссарий терминов
+
+- **[RBAC (Role-Based Access Control)](https://fastapi.tiangolo.com/tutorial/security/simple-oauth2/)** — метод разграничения доступа, при котором права назначаются ролям, а не отдельным пользователям.
+- **[ABAC (Attribute-Based Access Control)](https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/)** — гибкая модель доступа, использующая логические правила на основе атрибутов субъекта и объекта.
+- **Principle of Least Privilege (Принцип наименьших привилегий)** — стандарт безопасности, требующий предоставлять пользователю минимально необходимый набор прав для выполнения задачи.
+- **[Permission Claims](https://fastapi.tiangolo.com/tutorial/security/oauth2-jwt/#about-jwt)** — утверждения внутри JWT-токена (например, в поле `scopes` или `roles`), на основе которых принимается решение о доступе.
+- **Resource Ownership Verification** — процесс подтверждения того, что запрашивающий субъект является владельцем ресурса (ключевой сценарий ABAC).
+
+#### Практический кейс: Проектирование корпоративной системы разграничения прав
+
+**Сценарий:** Сервис управления документами работает в режиме Multi-tenancy, где каждая организация (Tenant) изолирована. Необходимо обеспечить доступ к документу только если пользователь принадлежит к той же организации и имеет соответствующую роль (`Owner`, `Admin`, `Member`), либо является автором документа.
+
+**Алгоритм реализации:**
+
+1. **Инъекция контекста:** Создается зависимость `get_current_tenant`, извлекающая ID организации из JWT.
+2. **Гибридная проверка:** Эндпоинт редактирования защищается цепочкой зависимостей:
+    - `user: CurrentUser` — проверка аутентификации.
+    - `doc: Annotated[Document, Depends(check_post_ownership)]` — проверка владения (ABAC).
+    - `RoleChecker(["Admin", "Owner"])` — проверка административных прав организации (RBAC).
+3. **Изоляция данных:** В запросах к БД всегда добавляется фильтр по `tenant_id`, даже если пользователь — администратор своей организации.
+
+#### Вопросы и задания для самопроверки
+
+1. **Вопрос:** Когда статической модели RBAC становится недостаточно?
+    - _Ответ: Когда права зависят от динамических условий, таких как время суток, IP-адрес или связь "пользователь-владелец" для конкретного объекта БД._
+2. **Задача:** Найдите ошибку в архитектуре: «Проверка того, является ли пользователь автором комментария, написана внутри функции `service.update_comment()`». Почему это стоит вынести в `Depends`?.
+3. **Практическое задание:** Напишите фабрику зависимостей `ScopeChecker(required_scopes=["read:users"])`, которая проверяет наличие необходимых разрешений в поле `scopes` декодированного JWT-токена.
