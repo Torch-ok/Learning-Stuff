@@ -1,4 +1,4 @@
 ---
 tags:
-  - Programming/Learning-Stuff/DevOps/Nginx/Module_9
+  - Programming/Learning-Stuff/SQL/Postgresql/Module_9
 ---
