@@ -130,9 +130,10 @@
 			* [[Learning Stuff/DevOps/Nginx/Модуль 12/12.4. Глоссарий терминов Модуля 12|12.4. Глоссарий терминов Модуля 12]]
 * **Python**
 	* FastAPI
+		* 
 * **SQL**
 	* Postgresql
 * **Web**
-* HTML
-* 
+	* HTML
+	* CSS
 * **Vibe Coding**
