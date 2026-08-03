@@ -1,6 +1,6 @@
 ---
 tags:
-  - Programming/Learning-Stuff/DevOps/Nginx
+  - Learning-Stuff/DevOps/Nginx
 ---
 * [[Модуль 1. Введение в Nginx и архитектурные основы]]
 	* [[1.1. Эволюция веб-серверов. Проблема C10K и архитектурный сдвиг от Apache к Nginx]]
