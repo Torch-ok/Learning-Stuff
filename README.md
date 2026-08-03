@@ -128,4 +128,8 @@
 			* [[12.2. Классификация и диагностика типовых ошибок. 502, 504, 403, 413 и ERR_TOO_MANY_REDIRECTS]]
 			* [[12.3. Инструменты отладки и глубокого анализа. error_log debug, nginx -t и nginx -T]]
 			* [[Learning Stuff/DevOps/Nginx/Модуль 12/12.4. Глоссарий терминов Модуля 12|12.4. Глоссарий терминов Модуля 12]]
-Python
+* Python
+* API
+* SQL
+* Web
+* Vibe Coding
