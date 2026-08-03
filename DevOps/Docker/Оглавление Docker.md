@@ -17,7 +17,7 @@ tags:
     * [[2.1. Анатомия Docker Engine. Взаимодействие CLI, REST API и Docker Daemon]]
     * [[2.2. Модульный стек OCI. Разделение обязанностей между containerd и runC]]
     * [[2.3. Модель распространения. Анатомия Docker Registry, Docker Hub и структура тегов]]
-    * [[Programming/Learning Stuff/DevOps/Docker/Модуль 2/2.4. Глоссарий терминов Модуля 2]]
+    * [[Learning Stuff/DevOps/Docker/Модуль 2/2.4. Глоссарий терминов Модуля 2]]
 * [[Модуль 3. Подкапотные технологии Linux (Ядро Docker)]]
     * [[3.1. Пространства имен (Namespaces). Механизм виртуализации ресурсов ядра]]
     * [[3.2. Control Groups (cgroups). Анатомия распределения и лимитирования ресурсов хоста]]
