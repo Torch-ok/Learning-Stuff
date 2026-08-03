@@ -2,3 +2,116 @@
 tags:
   - Programming/Learning-Stuff/SQL/Postgresql/Module_6
 ---
+## МОДУЛЬ 6: ПРОЕКТИРОВАНИЕ БД, НОРМАЛИЗАЦИЯ И JSONB
+
+### 6.1. Реляционная нормализация, функциональные зависимости и стратегии денормализации
+
+#### Теоретический фундамент и архитектура
+
+Процесс улучшения структуры базы данных, направленный на обеспечение хранения каждого независимого элемента данных только в одном месте (за исключением внешних ключей), называется **нормализацией** (`normalization`) [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9). Этот процесс критически важен для устранения избыточности данных, которая может привести к их недостоверности при частичном обновлении [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+
+**Фундаментальные нормальные формы и функциональные зависимости:**
+
+- **Первая нормальная форма (1NF):** Требует атомарности атрибутов. В ячейках таблицы не должно быть списков (`favorite_foods`), массивов или составных объектов [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/13). Например, поле `name` должно быть разделено на `fname` и `lname`, а `address` — на улицу, город и почтовый индекс [Alan_Beaulieu-Learning_SQL-RU](9, 13).
+- **Вторая нормальная форма (2NF):** Требует выполнения условий 1NF и полной функциональной зависимости каждого неключевого атрибута от всего первичного ключа [Шилдс Уолтер SQL](https://notebook.google.com/notebook/500). Это особенно актуально для таблиц с составными ключами (`Composite Keys`), таких как `order_details`, где связка `OrderId` и `ProductId` гарантирует, что цена и количество относятся к конкретному товару в конкретном заказе [Шилдс Уолтер SQL](501, 503).
+- **Третья нормальная форма (3NF):** Требует исключения транзитивных зависимостей. Неключевые поля должны зависеть только от первичного ключа, а не от других неключевых полей [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9). Например, в таблице счетов (`account`) не следует хранить имя клиента, так как оно зависит от его идентификатора (`cust_id`), который уже является внешним ключом [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+- **Нормальная форма Бойса-Кодда (BCNF):** Строгая версия 3NF, требующая, чтобы каждый детерминант функциональной зависимости был потенциальным ключом (`Candidate Key`) [Alan_Beaulieu-Learning_SQL-RU](16, 111).
+
+**Аномалии в ненормализованных БД:** Отсутствие нормализации приводит к трем типам аномалий:
+
+1. **Аномалия обновления (Update Anomaly):** При изменении имени клиента необходимо обновить его во всех таблицах, где оно дублируется, иначе данные станут противоречивыми [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+2. **Аномалия вставки (Insertion Anomaly):** Невозможность добавить данные об одной сущности без наличия данных о другой (например, нельзя добавить товар, пока не создана хотя бы одна продажа в денормализованной таблице) [Шилдс Уолтер SQL](https://notebook.google.com/notebook/531).
+3. **Аномалия удаления (Deletion Anomaly):** Случайное удаление уникальной информации об одной сущности при удалении записи о другой (например, удаление последнего заказа клиента приводит к потере информации о самом клиенте) [Шилдс Уолтер SQL](529, 531).
+
+**Сравнительный анализ архитектурных подходов OLTP vs OLAP:**
+
+- **OLTP (Online Transaction Processing):** Ориентирован на высокую степень нормализации (до 3NF/BCNF) [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9). Это минимизирует объем хранимых данных и обеспечивает максимальную скорость операций записи и изменения за счет отсутствия дублирования [Шилдс Уолтер SQL](https://notebook.google.com/notebook/527).
+- **OLAP (Online Analytical Processing):** Допускает сознательную денормализацию для ускорения сложных аналитических запросов [SQL. Сборник рецептов, 2-е издание](https://notebook.google.com/notebook/556). Здесь часто применяются схемы «Звезда» (`Star Schema`) и «Снежинка» (`Snowflake Schema`), где данные подготавливаются для быстрого чтения и агрегации [SQL. Сборник рецептов, 2-е издание](https://notebook.google.com/notebook/39).
+
+#### Практическая реализация и синтаксис
+
+**Пример рефакторинга ненормализованной таблицы заказов:** Исходная «плоская» структура содержит составные поля и избыточность:
+
+```
+-- Ненормализованная таблица (нарушает 1NF и 3NF)
+CREATE TABLE raw_orders (
+    order_id INT PRIMARY KEY,
+    customer_name TEXT, -- Нарушение 1NF (составное поле)
+    customer_address TEXT, -- Нарушение 1NF
+    item_list TEXT, -- Нарушение 1NF (список товаров)
+    total_amount NUMERIC
+);
+```
+
+**Пошаговое приведение к 3NF:**
+
+1. Выделяем клиентов в отдельный справочник (устранение избыточности) [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+2. Разделяем составные поля на атомарные атрибуты [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/13).
+3. Создаем таблицу связи для товаров (устранение списков) [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/14).
+
+```
+-- Шаг 1: Таблица клиентов (3NF)
+CREATE TABLE customers (
+    customer_id SERIAL PRIMARY KEY,
+    fname VARCHAR(50) NOT NULL,
+    lname VARCHAR(50) NOT NULL,
+    email VARCHAR(100) UNIQUE
+);
+
+-- Шаг 2: Таблица заказов (3NF)
+CREATE TABLE orders (
+    order_id SERIAL PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Шаг 3: Детализация заказов (2NF/3NF - составной ключ)
+CREATE TABLE order_items (
+    order_id INT REFERENCES orders(order_id),
+    product_id INT,
+    quantity INT NOT NULL,
+    unit_price NUMERIC(10, 2) NOT NULL,
+    PRIMARY KEY (order_id, product_id) -- Составной ключ [Шилдс Уолтер SQL](501)
+);
+```
+
+**Создание денормализованной таблицы фактов (OLAP):** Для аналитики часто создается «широкая» таблица с материализацией агрегатов [SQL. Сборник рецептов, 2-е издание](https://notebook.google.com/notebook/366).
+
+```
+CREATE TABLE sales_fact_table AS
+SELECT
+    c.customer_id,
+    c.lname || ' ' || c.fname as full_name,
+    o.order_id,
+    SUM(oi.quantity * oi.unit_price) OVER(PARTITION BY o.order_id) as order_total,
+    CURRENT_DATE as snapshot_date
+FROM customers c
+JOIN orders o ON c.customer_id = o.customer_id
+JOIN order_items oi ON o.order_id = oi.order_id;
+```
+
+#### Глоссарий терминов
+
+- **Functional Dependency** — логическая связь, при которой значение одного атрибута однозначно определяет значение другого [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+- **First Normal Form (1NF)** — состояние таблицы, где каждое поле содержит только одно атомарное значение и отсутствуют повторяющиеся группы [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/13).
+- **Second Normal Form (2NF)** — состояние 1NF, при котором каждый неключевой атрибут полностью зависит от всего первичного ключа [Шилдс Уолтер SQL](https://notebook.google.com/notebook/500).
+- **Third Normal Form (3NF)** — состояние 2NF, при котором исключены транзитивные зависимости неключевых атрибутов от ключа [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+- **Boyce-Codd Normal Form (BCNF)** — усиленная 3NF, требующая, чтобы любая функциональная зависимость опиралась на потенциальный ключ [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/16).
+- **Modification Anomalies** — логические ошибки (вставки, обновления, удаления), возникающие в избыточных структурах данных [Шилдс Уолтер SQL](https://notebook.google.com/notebook/531).
+- **OLTP vs OLAP Schema Trade-offs** — архитектурный выбор между нормализацией для целостности транзакций и денормализацией для скорости отчетов [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/527).
+- **Intentional Denormalization** — осознанное внесение избыточности в схему данных для оптимизации производительности чтения [SQL. Сборник рецептов, 2-е издание](https://notebook.google.com/notebook/364).
+
+#### Практический кейс: Нормализация хаотичной таблицы учета продаж
+
+**Сценарий:** Интернет-магазин ведет учет в плоской таблице `sales_excel`, где в одной строке записан клиент, его адрес, заказанные товары через запятую и категория скидки. **Трансформация:**
+
+1. **Декомпозиция:** Из поля `client_info` выделяются `fname` и `lname`. Поле `address` разбивается на `city`, `street` и `zip_code` для соответствия 1NF [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/13).
+2. **Атомарность:** Список товаров в ячейке `ordered_items` переносится в отдельную таблицу `order_details`, где каждая позиция — это отдельная строка, связанная с `order_id` [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/14).
+3. **Справочники:** Категории скидок выносятся в таблицу `discount_types`. В основной таблице заказов остается только `discount_id` [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9). В результате база данных переходит от Excel-подобного хаоса к строгой реляционной модели, защищенной от аномалий обновления [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+
+#### Вопросы и задания для самопроверки
+
+1. **Вопрос:** Объясните, почему таблица с составным ключом `(S_ID, Course_ID)` и атрибутом `Teacher_Room`, зависящим только от `Teacher_ID` (который не является ключом), нарушает 3NF и BCNF? [Alan_Beaulieu-Learning_SQL-RU](9, 16).
+2. **Задача:** В таблице `inventory` изменение цены товара требует обновления 1000 строк. К какому типу аномалий это относится? [Alan_Beaulieu-Learning_SQL-RU](https://notebook.google.com/notebook/9).
+    - _Ответ: Аномалия обновления (Update Anomaly)._
+3. **Практика:** Спроектируйте денормализованную витрину данных (`Data Mart`) для ежедневного отчета по продажам, которая объединяет данные из 5 нормализованных таблиц. Обоснуйте использование материализации [SQL. Сборник рецептов, 2-е издание](366, 556).
