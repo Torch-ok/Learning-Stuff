@@ -1,6 +1,6 @@
 ---
 tags:
-  - Learning-Stuff/DevOps/Sources
+  - DevOps/Sources
 ---
 1. [[Complete-NGINX-Cookbook-2019.pdf]]
 2. [[Mastering Nginx.pdf]]

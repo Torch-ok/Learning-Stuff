@@ -1,6 +1,6 @@
 ---
 tags:
-  - Learning-Stuff/DevOps/Sources
+  - DevOps/Sources
 ---
 1. [[Docker_eBook.pdf]]
 2. [[Docker-Cookbook.pdf]]

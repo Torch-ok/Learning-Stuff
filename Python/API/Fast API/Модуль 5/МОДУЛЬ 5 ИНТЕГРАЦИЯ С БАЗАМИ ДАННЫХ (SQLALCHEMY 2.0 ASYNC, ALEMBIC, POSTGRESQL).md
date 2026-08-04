@@ -1,6 +1,6 @@
 ---
 tags:
-  - Learning-Stuff/Python/API/FastAPI/Module_5
+  - Python/API/FastAPI/Module_5
 ---
 * [[Learning Stuff/Python/API/Fast API/Модуль 5/5.1. Архитектура SQLAlchemy 2.0 Async. AsyncEngine, asyncpg и Unit of Work]]
 * [[Learning Stuff/Python/API/Fast API/Модуль 5/5.2. Модели данных, CRUD-операции и оптимизация асинхронных связей]]

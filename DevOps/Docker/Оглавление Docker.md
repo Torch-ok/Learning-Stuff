@@ -1,6 +1,6 @@
 ---
 tags:
-  - Learning-Stuff/DevOps
+  - DevOps
 ---
 
 # 📚 Полный учебник по Docker: От А до Я
